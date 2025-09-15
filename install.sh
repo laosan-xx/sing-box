@@ -189,8 +189,40 @@ download() {
 
 # get server ip
 get_ip() {
-    export "$(_wget -4 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
-    [[ -z $ip ]] && export "$(_wget -6 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
+    # 方法1: 使用多个公共API服务提高可靠性
+    local api_services=(
+        "https://api.ipify.org"
+        "https://icanhazip.com" 
+        "https://ident.me"
+        "https://checkip.amazonaws.com"
+    )
+    
+    for api in "${api_services[@]}"; do
+        ip=$(_wget -4 -qO- "$api" 2>/dev/null | head -n1 | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}')
+        [[ -n "$ip" ]] && break
+        
+        # 尝试IPv6
+        ip=$(_wget -6 -qO- "$api" 2>/dev/null | head -n1 | grep -Eo '([a-f0-9:]+:+)+[a-f0-9]+')
+        [[ -n "$ip" ]] && break
+    done
+    
+    # 方法2: 如果API都失败，尝试系统网络接口
+    if [[ -z "$ip" ]]; then
+        # 获取默认路由的网络接口
+        local default_iface=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
+        if [[ -n "$default_iface" ]]; then
+            # 获取该接口的IP地址
+            ip=$(ip addr show dev "$default_iface" 2>/dev/null | \
+                 awk '/inet / {print $2}' | cut -d'/' -f1 | head -n1)
+            [[ -z "$ip" ]] && ip=$(ip addr show dev "$default_iface" 2>/dev/null | \
+                 awk '/inet6/ {print $2}' | cut -d'/' -f1 | head -n1)
+        fi
+    fi
+    
+    # 方法3: 最后尝试hostname命令
+    [[ -z "$ip" ]] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    
+    export ip="$ip"
 }
 
 # check background tasks status

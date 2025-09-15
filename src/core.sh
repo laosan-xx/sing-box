@@ -117,11 +117,42 @@ get_uuid() {
 
 get_ip() {
     [[ $ip || $is_no_auto_tls || $is_gen || $is_dont_get_ip ]] && return
-    export "$(_wget -4 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
-    [[ ! $ip ]] && export "$(_wget -6 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
+    
+    # 使用多种方法获取服务器IP
+    local api_services=(
+        "https://api.ipify.org"
+        "https://icanhazip.com"
+        "https://ident.me"
+        "https://checkip.amazonaws.com"
+    )
+    
+    for api in "${api_services[@]}"; do
+        ip=$(_wget -4 -qO- "$api" 2>/dev/null | head -n1 | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}')
+        [[ -n "$ip" ]] && break
+        
+        ip=$(_wget -6 -qO- "$api" 2>/dev/null | head -n1 | grep -Eo '([a-f0-9:]+:+)+[a-f0-9]+')
+        [[ -n "$ip" ]] && break
+    done
+    
+    # 如果API方法都失败，尝试系统网络接口
+    if [[ ! $ip ]]; then
+        local default_iface=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
+        if [[ -n "$default_iface" ]]; then
+            ip=$(ip addr show dev "$default_iface" 2>/dev/null | \
+                 awk '/inet / {print $2}' | cut -d'/' -f1 | head -n1)
+            [[ ! $ip ]] && ip=$(ip addr show dev "$default_iface" 2>/dev/null | \
+                 awk '/inet6/ {print $2}' | cut -d'/' -f1 | head -n1)
+        fi
+    fi
+    
+    # 最后尝试hostname命令
+    [[ ! $ip ]] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    
     [[ ! $ip ]] && {
         err "获取服务器 IP 失败.."
     }
+    
+    export ip="$ip"
 }
 
 get_port() {
@@ -1211,7 +1242,18 @@ get() {
         # is_host_dns=$(ping $host $is_ip_type -c 1 -W 2 | head -1)
         is_dns_type="a"
         [[ $(grep ":" <<<$ip) ]] && is_dns_type="aaaa"
-        is_host_dns=$(_wget -qO- --header="accept: application/dns-json" "https://one.one.one.one/dns-query?name=$host&type=$is_dns_type")
+        # 使用多个公共DNS-over-HTTPS服务提供商
+        local dns_services=(
+            "https://cloudflare-dns.com/dns-query"
+            "https://dns.google/dns-query" 
+            "https://doh.opendns.com/dns-query"
+            "https://dns.quad9.net/dns-query"
+        )
+        
+        for dns_server in "${dns_services[@]}"; do
+            is_host_dns=$(_wget -qO- --header="accept: application/dns-json" "${dns_server}?name=$host&type=$is_dns_type" 2>/dev/null)
+            [[ -n "$is_host_dns" ]] && break
+        done
         ;;
     install-caddy)
         _green "\n安装 Caddy 实现自动配置 TLS.\n"
